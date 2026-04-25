@@ -631,8 +631,8 @@
 
 <script>
   const API = window.location.origin.includes('localhost') || window.location.origin.includes('127.0')
-    ? 'http://localhost:5000'
-    : (window.ENV_API_URL || 'http://banking-backend-service:5000');
+  ? 'http://localhost:5000'
+  : '/api';
 
   function switchTab(tab) {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));

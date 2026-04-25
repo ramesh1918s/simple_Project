@@ -38,7 +38,7 @@ push_images() {
 # ── Local Dev (Docker Compose) ───────────────────────────────
 deploy_local() {
   info "Starting local environment with Docker Compose..."
-  docker-compose up --build -d
+  docker compose up -d
   echo ""
   log "Services started!"
   echo -e "  ${BLUE}Frontend:${NC}  http://localhost:3000"
