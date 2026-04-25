@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NeoBank — Modern Banking</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --card: #1a1a26;
+      --border: #2a2a40;
+      --accent: #6c63ff;
+      --accent2: #00d4aa;
+      --accent3: #ff6b6b;
+      --text: #e8e8f0;
+      --muted: #6b6b8a;
+      --success: #00d4aa;
+      --error: #ff6b6b;
+      --warning: #ffb347;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'DM Mono', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─── Background grid ─── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(108,99,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(108,99,255,0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── Glow orbs ─── */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.25;
+      animation: pulse 8s ease-in-out infinite;
+    }
+    .orb-1 { width: 600px; height: 600px; background: var(--accent); top: -200px; left: -200px; }
+    .orb-2 { width: 500px; height: 500px; background: var(--accent2); bottom: -200px; right: -150px; animation-delay: 4s; }
+    @keyframes pulse { 0%,100%{opacity:.2} 50%{opacity:.35} }
+
+    /* ─── Layout ─── */
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    /* ─── Header ─── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 60px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+    }
+
+    .logo-text {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .logo-text span { color: var(--accent2); }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: rgba(0, 212, 170, 0.1);
+      border: 1px solid rgba(0, 212, 170, 0.3);
+      border-radius: 50px;
+      font-size: 0.75rem;
+      color: var(--accent2);
+    }
+
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent2);
+      animation: blink 2s ease infinite;
+    }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ─── Hero ─── */
+    .hero {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .hero h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 800;
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      margin-bottom: 16px;
+    }
+
+    .hero h1 .highlight {
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      color: var(--muted);
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+    }
+
+    /* ─── Tab Navigation ─── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      margin-bottom: 40px;
+      width: fit-content;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .tab-btn {
+      padding: 10px 24px;
+      border: none;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'Syne', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.02em;
+    }
+
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      background: linear-gradient(135deg, var(--accent), #8b84ff);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(108,99,255,0.4);
+    }
+
+    /* ─── Panels ─── */
+    .panel { display: none; }
+    .panel.active { display: block; animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
+    /* ─── Cards ─── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 36px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(108,99,255,0.05) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+
+    .card-icon {
+      width: 48px; height: 48px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+    .card-icon.purple { background: rgba(108,99,255,0.15); }
+    .card-icon.teal   { background: rgba(0,212,170,0.15); }
+    .card-icon.red    { background: rgba(255,107,107,0.15); }
+
+    .card-title {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .card-subtitle { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+
+    /* ─── Grid ─── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* ─── Form ─── */
+    .form-group { margin-bottom: 20px; }
+    .form-group label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .form-control {
+      width: 100%;
+      padding: 13px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    .form-control:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(108,99,255,0.15);
+    }
+
+    .form-control::placeholder { color: var(--muted); }
+
+    select.form-control {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%236b6b8a' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+    }
+
+    /* ─── Buttons ─── */
+    .btn {
+      padding: 13px 28px;
+      border: none;
+      border-radius: 12px;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.02em;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      justify-content: center;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #8b84ff);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(108,99,255,0.3);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(108,99,255,0.45); }
+    .btn-primary:active { transform: translateY(0); }
+
+    .btn-teal {
+      background: linear-gradient(135deg, var(--accent2), #00a88a);
+      color: #0a0a0f;
+      box-shadow: 0 4px 20px rgba(0,212,170,0.3);
+    }
+    .btn-teal:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,212,170,0.45); }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    /* ─── Alert ─── */
+    .alert {
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      margin-top: 20px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn { from{opacity:0;transform:translateX(-10px)} to{opacity:1;transform:translateX(0)} }
+    .alert-success { background: rgba(0,212,170,0.1); border: 1px solid rgba(0,212,170,0.3); color: var(--accent2); }
+    .alert-error   { background: rgba(255,107,107,0.1); border: 1px solid rgba(255,107,107,0.3); color: var(--error); }
+    .alert-info    { background: rgba(108,99,255,0.1); border: 1px solid rgba(108,99,255,0.3); color: #a09bff; }
+
+    /* ─── Balance Display ─── */
+    .balance-display {
+      text-align: center;
+      padding: 40px 20px;
+    }
+
+    .balance-label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .balance-amount {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(2.5rem, 8vw, 4rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(90deg, var(--accent2), #a0ffec);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .balance-name {
+      font-size: 0.9rem;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+
+    .balance-acc {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 6px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 50px;
+      font-size: 0.78rem;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+
+    /* ─── Transaction List ─── */
+    .tx-list { margin-top: 24px; }
+    .tx-list-title {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tx-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(42,42,64,0.6);
+      animation: fadeIn 0.3s ease both;
+    }
+
+    .tx-item:last-child { border-bottom: none; }
+
+    .tx-left { display: flex; align-items: center; gap: 12px; }
+
+    .tx-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tx-dot.credit { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+    .tx-dot.debit  { background: var(--error);   box-shadow: 0 0 8px var(--error); }
+
+    .tx-desc { font-size: 0.85rem; color: var(--text); }
+    .tx-date { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
+
+    .tx-amount {
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+    .tx-amount.credit { color: var(--accent2); }
+    .tx-amount.debit  { color: var(--error); }
+
+    /* ─── Account Success Card ─── */
+    .acc-success {
+      text-align: center;
+      padding: 20px 0;
+    }
+
+    .acc-number-display {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+      margin: 16px 0;
+    }
+
+    .acc-detail-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .acc-detail-row:last-child { border-bottom: none; }
+    .acc-detail-row span:first-child { color: var(--muted); }
+
+    /* ─── Loading Spinner ─── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Stats Bar ─── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 40px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .stat-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    @media (max-width: 480px) { .stats-bar { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">₦</div>
+      <div class="logo-text">Neo<span>Bank</span></div>
+    </div>
+    <div class="status-pill">
+      <div class="status-dot"></div>
+      SYSTEM ONLINE
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <div class="hero">
+    <h1>Banking <span class="highlight">Reimagined</span><br>for the Digital Age</h1>
+    <p>Create accounts · Deposit funds · Track balance — all in one place</p>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('create')">🏦 Create Account</button>
+    <button class="tab-btn" onclick="switchTab('deposit')">💸 Add Money</button>
+    <button class="tab-btn" onclick="switchTab('balance')">📊 Check Balance</button>
+  </div>
+
+  <!-- ── Panel: Create Account ── -->
+  <div id="panel-create" class="panel active">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon purple">🏦</div>
+        <div>
+          <div class="card-title">Open New Account</div>
+          <div class="card-subtitle">Free to open · Instant activation</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label>Full Name</label>
+          <input class="form-control" id="create-name" type="text" placeholder="e.g. Priya Sharma" />
+        </div>
+        <div class="form-group">
+          <label>Email Address</label>
+          <input class="form-control" id="create-email" type="email" placeholder="priya@example.com" />
+        </div>
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input class="form-control" id="create-phone" type="tel" placeholder="+91 98765 43210" />
+        </div>
+        <div class="form-group">
+          <label>Account Type</label>
+          <select class="form-control" id="create-type">
+            <option value="SAVINGS">Savings Account</option>
+            <option value="CURRENT">Current Account</option>
+          </select>
+        </div>
+        <div class="form-group" style="grid-column: 1/-1">
+          <label>Initial Deposit (₹)</label>
+          <input class="form-control" id="create-deposit" type="number" min="0" placeholder="0.00 — optional" />
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-create" onclick="createAccount()">
+        Open Account
+      </button>
+
+      <div id="create-result"></div>
+    </div>
+  </div>
+
+  <!-- ── Panel: Deposit ── -->
+  <div id="panel-deposit" class="panel">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon teal">💸</div>
+        <div>
+          <div class="card-title">Add Money</div>
+          <div class="card-subtitle">Instant credit · Zero fees</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Account Number or Email</label>
+        <input class="form-control" id="dep-account" type="text" placeholder="ACC123456789 or email" />
+      </div>
+      <div class="form-group">
+        <label>Amount (₹)</label>
+        <input class="form-control" id="dep-amount" type="number" min="1" placeholder="1000.00" />
+      </div>
+      <div class="form-group">
+        <label>Description (Optional)</label>
+        <input class="form-control" id="dep-desc" type="text" placeholder="e.g. Salary, Transfer..." />
+      </div>
+
+      <button class="btn btn-teal" id="btn-deposit" onclick="deposit()">
+        Deposit Funds
+      </button>
+
+      <div id="deposit-result"></div>
+    </div>
+  </div>
+
+  <!-- ── Panel: Balance ── -->
+  <div id="panel-balance" class="panel">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon red">📊</div>
+        <div>
+          <div class="card-title">Balance Inquiry</div>
+          <div class="card-subtitle">Real-time · Last 5 transactions</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Account Number or Email</label>
+        <input class="form-control" id="bal-account" type="text" placeholder="ACC123456789 or email" />
+      </div>
+
+      <button class="btn btn-primary" id="btn-balance" onclick="checkBalance()">
+        Check Balance
+      </button>
+
+      <div id="balance-result"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const API = window.location.origin.includes('localhost') || window.location.origin.includes('127.0')
+    ? 'http://localhost:5000'
+    : (window.ENV_API_URL || 'http://banking-backend-service:5000');
+
+  function switchTab(tab) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(`panel-${tab}`).classList.add('active');
+    event.target.classList.add('active');
+  }
+
+  function setLoading(btnId, loading) {
+    const btn = document.getElementById(btnId);
+    btn.disabled = loading;
+    if (loading) {
+      btn.dataset.original = btn.innerHTML;
+      btn.innerHTML = `<span class="spinner"></span> Processing...`;
+    } else {
+      btn.innerHTML = btn.dataset.original || btn.innerHTML;
+    }
+  }
+
+  function formatINR(amount) {
+    return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(amount);
+  }
+
+  function formatDate(iso) {
+    return new Date(iso).toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+  }
+
+  async function createAccount() {
+    const name    = document.getElementById('create-name').value.trim();
+    const email   = document.getElementById('create-email').value.trim();
+    const phone   = document.getElementById('create-phone').value.trim();
+    const type    = document.getElementById('create-type').value;
+    const deposit = parseFloat(document.getElementById('create-deposit').value) || 0;
+    const result  = document.getElementById('create-result');
+
+    if (!name || !email) {
+      result.innerHTML = `<div class="alert alert-error">⚠ Name and email are required.</div>`;
+      return;
+    }
+
+    setLoading('btn-create', true);
+    try {
+      const res = await fetch(`${API}/api/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: name, email, phone, account_type: type, initial_deposit: deposit })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+
+      const acc = data.account;
+      result.innerHTML = `
+        <div class="alert alert-success">✅ Account created successfully!</div>
+        <div class="acc-success" style="margin-top:24px">
+          <div style="font-size:0.75rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase">Your Account Number</div>
+          <div class="acc-number-display">${acc.account_number}</div>
+          <div class="acc-detail-row"><span>Name</span><span>${acc.full_name}</span></div>
+          <div class="acc-detail-row"><span>Email</span><span>${acc.email}</span></div>
+          <div class="acc-detail-row"><span>Type</span><span>${acc.account_type}</span></div>
+          <div class="acc-detail-row"><span>Balance</span><span style="color:var(--accent2);font-weight:700">${formatINR(acc.balance)}</span></div>
+          <div class="acc-detail-row"><span>Status</span><span style="color:var(--accent2)">● ${acc.status}</span></div>
+        </div>`;
+
+      // Clear form
+      ['create-name','create-email','create-phone','create-deposit'].forEach(id => document.getElementById(id).value = '');
+    } catch (err) {
+      result.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    } finally {
+      setLoading('btn-create', false);
+    }
+  }
+
+  async function deposit() {
+    const identifier = document.getElementById('dep-account').value.trim();
+    const amount     = parseFloat(document.getElementById('dep-amount').value);
+    const desc       = document.getElementById('dep-desc').value.trim();
+    const result     = document.getElementById('deposit-result');
+
+    if (!identifier || !amount || amount <= 0) {
+      result.innerHTML = `<div class="alert alert-error">⚠ Enter valid account and amount.</div>`;
+      return;
+    }
+
+    setLoading('btn-deposit', true);
+    try {
+      const res = await fetch(`${API}/api/transactions/deposit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_identifier: identifier, amount, description: desc || undefined })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+
+      result.innerHTML = `
+        <div class="alert alert-success">✅ Deposit successful!</div>
+        <div style="margin-top:24px">
+          <div class="balance-display">
+            <div class="balance-label">New Balance</div>
+            <div class="balance-amount">${formatINR(data.account.new_balance)}</div>
+            <div class="balance-name">${data.account.full_name}</div>
+            <div class="balance-acc">🏦 ${data.account.account_number}</div>
+          </div>
+          <div class="acc-detail-row" style="margin-top:16px"><span>Transaction ID</span><span style="font-size:0.75rem;color:var(--muted)">${data.transaction.id.split('-')[0].toUpperCase()}...</span></div>
+          <div class="acc-detail-row"><span>Amount Credited</span><span style="color:var(--accent2);font-weight:700">+${formatINR(data.transaction.amount)}</span></div>
+          <div class="acc-detail-row"><span>Description</span><span>${data.transaction.description}</span></div>
+          <div class="acc-detail-row"><span>Time</span><span>${formatDate(data.transaction.created_at)}</span></div>
+        </div>`;
+
+      document.getElementById('dep-account').value = '';
+      document.getElementById('dep-amount').value = '';
+      document.getElementById('dep-desc').value = '';
+    } catch (err) {
+      result.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    } finally {
+      setLoading('btn-deposit', false);
+    }
+  }
+
+  async function checkBalance() {
+    const identifier = document.getElementById('bal-account').value.trim();
+    const result     = document.getElementById('balance-result');
+
+    if (!identifier) {
+      result.innerHTML = `<div class="alert alert-error">⚠ Enter account number or email.</div>`;
+      return;
+    }
+
+    setLoading('btn-balance', true);
+    try {
+      const res = await fetch(`${API}/api/transactions/balance/${encodeURIComponent(identifier)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown error');
+
+      const txHTML = data.recent_transactions.length > 0
+        ? data.recent_transactions.map(tx => `
+            <div class="tx-item">
+              <div class="tx-left">
+                <div class="tx-dot ${tx.type.toLowerCase()}"></div>
+                <div>
+                  <div class="tx-desc">${tx.description || tx.type}</div>
+                  <div class="tx-date">${formatDate(tx.created_at)}</div>
+                </div>
+              </div>
+              <div class="tx-amount ${tx.type.toLowerCase()}">
+                ${tx.type === 'CREDIT' ? '+' : '-'}${formatINR(tx.amount)}
+              </div>
+            </div>`).join('')
+        : `<div style="text-align:center;color:var(--muted);padding:20px;font-size:0.85rem">No transactions yet</div>`;
+
+      result.innerHTML = `
+        <div class="balance-display">
+          <div class="balance-label">Available Balance</div>
+          <div class="balance-amount">${formatINR(data.balance)}</div>
+          <div class="balance-name">${data.full_name} · ${data.account_type}</div>
+          <div class="balance-acc">🏦 ${data.account_number}</div>
+        </div>
+        <div class="tx-list">
+          <div class="tx-list-title">Recent Transactions</div>
+          ${txHTML}
+        </div>`;
+    } catch (err) {
+      result.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    } finally {
+      setLoading('btn-balance', false);
+    }
+  }
+
+  // Enter key support
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const active = document.querySelector('.panel.active').id;
+    if (active === 'panel-create') createAccount();
+    else if (active === 'panel-deposit') deposit();
+    else if (active === 'panel-balance') checkBalance();
+  });
+</script>
+</body>
+</html>

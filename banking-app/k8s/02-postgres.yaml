@@ -1,0 +1,169 @@
+---
+# ─── PersistentVolumeClaim for Postgres ────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: banking
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard   # Change to your cluster's storage class
+
+---
+# ─── ConfigMap: SQL init script ────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: banking
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    CREATE TABLE IF NOT EXISTS accounts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        account_number VARCHAR(12) UNIQUE NOT NULL DEFAULT '',
+        full_name VARCHAR(100) NOT NULL,
+        email VARCHAR(150) UNIQUE NOT NULL,
+        phone VARCHAR(15),
+        balance NUMERIC(15, 2) DEFAULT 0.00 NOT NULL CHECK (balance >= 0),
+        account_type VARCHAR(20) DEFAULT 'SAVINGS' CHECK (account_type IN ('SAVINGS', 'CURRENT')),
+        status VARCHAR(10) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE')),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS transactions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        type VARCHAR(10) NOT NULL CHECK (type IN ('CREDIT', 'DEBIT')),
+        amount NUMERIC(15, 2) NOT NULL CHECK (amount > 0),
+        description TEXT,
+        balance_after NUMERIC(15, 2) NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE OR REPLACE FUNCTION generate_account_number()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.account_number := 'ACC' || LPAD(FLOOR(RANDOM() * 999999999)::TEXT, 9, '0');
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS set_account_number ON accounts;
+    CREATE TRIGGER set_account_number
+    BEFORE INSERT ON accounts
+    FOR EACH ROW EXECUTE FUNCTION generate_account_number();
+
+    CREATE OR REPLACE FUNCTION update_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS accounts_updated_at ON accounts;
+    CREATE TRIGGER accounts_updated_at
+    BEFORE UPDATE ON accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+    CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+    CREATE INDEX IF NOT EXISTS idx_accounts_number ON accounts(account_number);
+    CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id);
+
+---
+# ─── StatefulSet: PostgreSQL ────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: banking
+  labels:
+    app: postgres
+    tier: database
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init-sql
+          configMap:
+            name: postgres-init-sql
+
+---
+# ─── Service: PostgreSQL (ClusterIP — internal only) ───────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: banking
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None   # Headless for StatefulSet
