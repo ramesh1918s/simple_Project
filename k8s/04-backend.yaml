@@ -27,7 +27,6 @@ spec:
       terminationGracePeriodSeconds: 30
       # ✅ Matches Dockerfile: adduser -S appuser (UID 1000)
       securityContext:
-        runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
       containers:
