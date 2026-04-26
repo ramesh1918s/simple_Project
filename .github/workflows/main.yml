@@ -1,86 +1,526 @@
-name: Banking-App — Build & Deploy to EKS (Helm)
+name: Banking-App — Build, Approve & Deploy to EKS (Helm)
 
 on:
+  # ── Auto trigger on push ───────────────────────
   push:
-    branches: [main, develop, staging]
+    branches:
+      - main
+      - develop
+      - staging
+
+  # ── Manual trigger with inputs ─────────────────
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "🌍 Select Deploy Environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+        default: dev
+
+      branch:
+        description: "🌿 Branch to deploy"
+        required: true
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
+        default: main
+
+      image_tag:
+        description: "🐳 Docker image tag (leave empty = auto)"
+        required: false
+        default: ""
+
+      skip_tests:
+        description: "⚡ Skip vulnerability scan?"
+        required: false
+        type: boolean
+        default: false
+
+      force_deploy:
+        description: "🚀 Force deploy even if no changes?"
+        required: false
+        type: boolean
+        default: false
+
+# ── Prevent concurrent deployments ────────────────
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 env:
-  AWS_REGION: ap-south-1
-  EKS_CLUSTER: banking-eks-cluster
-
-  DOCKERHUB_BACKEND: shivaram1918/banking-backend
-  DOCKERHUB_FRONTEND: shivaram1918/banking-frontend
+  DOCKERHUB_USERNAME:  shivaram1918
+  DOCKERHUB_BACKEND:   shivaram1918/banking-backend
+  DOCKERHUB_FRONTEND:  shivaram1918/banking-frontend
+  AWS_REGION:          ap-south-1
+  EKS_CLUSTER:         banking-eks-cluster
+  HELM_RELEASE:        banking-app
+  HELM_CHART_PATH:     ./helm
 
 jobs:
 
-# ─────────────────────────────
-# SETUP
-# ─────────────────────────────
+  # ─────────────────────────────────────────────────
+  #  JOB 1: Setup — decide environment & tag
+  # ─────────────────────────────────────────────────
   setup:
+    name: 🔧 Setup Environment
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.vars.outputs.tag }}
+      environment: ${{ steps.vars.outputs.environment }}
+      namespace:   ${{ steps.vars.outputs.namespace }}
+      image_tag:   ${{ steps.vars.outputs.image_tag }}
+      replicas:    ${{ steps.vars.outputs.replicas }}
 
     steps:
-      - id: vars
-        run: |
-          TAG=${GITHUB_SHA::7}
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Checkout
+        uses: actions/checkout@v4
 
-# ─────────────────────────────
-# BUILD & PUSH
-# ─────────────────────────────
+      - name: Resolve environment & variables
+        id: vars
+        run: |
+          # ── Determine environment ──────────────
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENV="production"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            ENV="staging"
+          else
+            ENV="dev"
+          fi
+
+          # ── Determine namespace ────────────────
+          if   [ "$ENV" = "production" ]; then NS="default"
+          elif [ "$ENV" = "staging" ];    then NS="staging"
+          else                                 NS="dev"
+          fi
+
+          # ── Determine replicas ─────────────────
+          if   [ "$ENV" = "production" ]; then REPLICAS="3"
+          elif [ "$ENV" = "staging" ];    then REPLICAS="2"
+          else                                 REPLICAS="1"
+          fi
+
+          # ── Determine image tag ────────────────
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            TAG="${ENV}-${SHORT_SHA}"
+          fi
+
+          echo "environment=${ENV}"   >> $GITHUB_OUTPUT
+          echo "namespace=${NS}"      >> $GITHUB_OUTPUT
+          echo "image_tag=${TAG}"     >> $GITHUB_OUTPUT
+          echo "replicas=${REPLICAS}" >> $GITHUB_OUTPUT
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Environment : ${ENV}"
+          echo "  Namespace   : ${NS}"
+          echo "  Image Tag   : ${TAG}"
+          echo "  Replicas    : ${REPLICAS}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # ─────────────────────────────────────────────────
+  #  JOB 2: Build & Push — Backend + Frontend
+  # ─────────────────────────────────────────────────
   build:
+    name: 🐳 Build & Push — ${{ needs.setup.outputs.environment }}
     runs-on: ubuntu-latest
     needs: setup
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
 
-      - name: Docker Login
+      - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Backend
-        run: |
-          docker build -t $DOCKERHUB_BACKEND:${{ needs.setup.outputs.tag }} ./backend
-          docker push $DOCKERHUB_BACKEND:${{ needs.setup.outputs.tag }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build Frontend
-        run: |
-          docker build -t $DOCKERHUB_FRONTEND:${{ needs.setup.outputs.tag }} ./frontend
-          docker push $DOCKERHUB_FRONTEND:${{ needs.setup.outputs.tag }}
+      - name: Build & Push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_BACKEND }}:${{ needs.setup.outputs.image_tag }}
+            ${{ env.DOCKERHUB_BACKEND }}:latest
+            ${{ env.DOCKERHUB_BACKEND }}:${{ needs.setup.outputs.environment }}-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-# ─────────────────────────────
-# DEPLOY TO EKS USING HELM
-# ─────────────────────────────
-  deploy:
+      - name: Build & Push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_FRONTEND }}:${{ needs.setup.outputs.image_tag }}
+            ${{ env.DOCKERHUB_FRONTEND }}:latest
+            ${{ env.DOCKERHUB_FRONTEND }}:${{ needs.setup.outputs.environment }}-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build summary
+        run: |
+          echo "### 🐳 Docker Images Built & Pushed"  >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |"                       >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|"                       >> $GITHUB_STEP_SUMMARY
+          echo "| Backend  | \`${{ env.DOCKERHUB_BACKEND }}:${{ needs.setup.outputs.image_tag }}\` |"  >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | \`${{ env.DOCKERHUB_FRONTEND }}:${{ needs.setup.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ needs.setup.outputs.environment }}\` |"                         >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |"                                              >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────
+  #  JOB 3: Security Scan — Backend + Frontend
+  # ─────────────────────────────────────────────────
+  scan:
+    name: 🔍 Security Scan
     runs-on: ubuntu-latest
-    needs: build
+    needs: [setup, build]
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Configure AWS
+      - name: Trivy scan — Backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKERHUB_BACKEND }}:${{ needs.setup.outputs.image_tag }}
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+          output: trivy-backend-report.txt
+
+      - name: Trivy scan — Frontend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKERHUB_FRONTEND }}:${{ needs.setup.outputs.image_tag }}
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+          output: trivy-frontend-report.txt
+
+      - name: Upload scan reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports-${{ needs.setup.outputs.environment }}
+          path: |
+            trivy-backend-report.txt
+            trivy-frontend-report.txt
+
+  # ─────────────────────────────────────────────────
+  #  JOB 4: Manual Approval Gate 🔐
+  #
+  #  HOW TO SETUP APPROVAL:
+  #  GitHub Repo → Settings → Environments
+  #  → Create: "dev", "staging", "production"
+  #  → Each env → Add "Required reviewers" (your GitHub username)
+  #  → Production → Also enable "Wait timer" (e.g. 5 min)
+  #
+  #  When pipeline runs → it will PAUSE here
+  #  → Reviewer gets email notification
+  #  → They click Approve/Reject in GitHub Actions UI
+  # ─────────────────────────────────────────────────
+  approval:
+    name: ✅ Waiting for Approval — ${{ needs.setup.outputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [setup, build, scan]
+    if: always() && needs.build.result == 'success'
+
+    # ⬇️ This line makes GitHub PAUSE and wait for manual approval
+    environment:
+      name: ${{ needs.setup.outputs.environment }}
+
+    steps:
+      - name: Approval granted
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  ✅ DEPLOYMENT APPROVED BY: ${{ github.actor }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Environment : ${{ needs.setup.outputs.environment }}"
+          echo "  Image Tag   : ${{ needs.setup.outputs.image_tag }}"
+          echo "  Namespace   : ${{ needs.setup.outputs.namespace }}"
+          echo "  Replicas    : ${{ needs.setup.outputs.replicas }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # ─────────────────────────────────────────────────
+  #  JOB 5: Deploy to EKS via Helm
+  # ─────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy to EKS — ${{ needs.setup.outputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [setup, approval]
+    if: needs.approval.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:            ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name $EKS_CLUSTER
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER }}
 
       - name: Install Helm
         uses: azure/setup-helm@v4
 
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ needs.setup.outputs.namespace }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy with Helm
         run: |
-          helm upgrade --install banking-app ./helm \
-            --set backend.image.repository=$DOCKERHUB_BACKEND \
-            --set backend.image.tag=${{ needs.setup.outputs.tag }} \
-            --set frontend.image.repository=$DOCKERHUB_FRONTEND \
-            --set frontend.image.tag=${{ needs.setup.outputs.tag }}
+          helm upgrade --install ${{ env.HELM_RELEASE }} ${{ env.HELM_CHART_PATH }} \
+            --namespace ${{ needs.setup.outputs.namespace }} \
+            --set global.environment=${{ needs.setup.outputs.environment }} \
+            --set backend.image.repository=${{ env.DOCKERHUB_BACKEND }} \
+            --set backend.image.tag=${{ needs.setup.outputs.image_tag }} \
+            --set backend.replicaCount=${{ needs.setup.outputs.replicas }} \
+            --set frontend.image.repository=${{ env.DOCKERHUB_FRONTEND }} \
+            --set frontend.image.tag=${{ needs.setup.outputs.image_tag }} \
+            --set frontend.replicaCount=${{ needs.setup.outputs.replicas }} \
+            --wait \
+            --timeout 5m \
+            --atomic
+
+      - name: Get App URL
+        id: url
+        run: |
+          sleep 15
+          URL=$(kubectl get svc banking-app-frontend \
+            -n ${{ needs.setup.outputs.namespace }} \
+            -o jsonpath='http://{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+          echo "🌐 App URL: ${URL}"
+
+      - name: Final summary
+        run: |
+          echo "### 🏦 Banking-App Deployed via Helm!"      >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |"                             >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|"                             >> $GITHUB_STEP_SUMMARY
+          echo "| 🌍 Env      | \`${{ needs.setup.outputs.environment }}\` |"  >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Tag      | \`${{ needs.setup.outputs.image_tag }}\` |"    >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 NS       | \`${{ needs.setup.outputs.namespace }}\` |"    >> $GITHUB_STEP_SUMMARY
+          echo "| 🔁 Replicas | \`${{ needs.setup.outputs.replicas }}\` |"     >> $GITHUB_STEP_SUMMARY
+          echo "| ⎈ Release  | \`${{ env.HELM_RELEASE }}\` |"                 >> $GITHUB_STEP_SUMMARY
+          echo "| 🌐 URL      | ${{ steps.url.outputs.url }} |"                >> $GITHUB_STEP_SUMMARY
+          echo ""                                            >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`"                                      >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n ${{ needs.setup.outputs.namespace }} -l app=banking-app >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`"                                      >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────
+  #  JOB 6: Notify Success Email
+  #
+  #  GMAIL SETUP చేయడం ఎలా:
+  #  Gmail → Google Account → Security
+  #  → 2-Step Verification: ON చేయి
+  #  → App Passwords → Select app: Mail
+  #  → Select device: Other → "GitHub Actions"
+  #  → Generate → 16-digit password copy చేయి
+  #  → GitHub Secrets లో GMAIL_APP_PASSWORD గా add చేయి
+  # ─────────────────────────────────────────────────
+  notify-success:
+    name: 📧 Notify Success — Email
+    runs-on: ubuntu-latest
+    needs: [setup, build, deploy]
+    if: success()
+
+    steps:
+      - name: Send Success Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port:    465
+          secure:         true
+          username:       ${{ secrets.GMAIL_USERNAME }}
+          password:       ${{ secrets.GMAIL_APP_PASSWORD }}
+          to:             rameshmuddappagari1918@gmail.com
+          from:           "Banking-App CI/CD 🏦 <${{ secrets.GMAIL_USERNAME }}>"
+          subject:        "✅ [${{ needs.setup.outputs.environment }}] Banking-App Deployed Successfully!"
+          html_body: |
+            <html>
+            <body style="font-family: Arial, sans-serif; background:#f4f4f4; padding:20px;">
+              <div style="max-width:600px; margin:auto; background:white; border-radius:8px;
+                          border-left: 5px solid #28a745; padding:30px;">
+
+                <h2 style="color:#28a745;">✅ Deployment Successful!</h2>
+                <p style="color:#555;">Banking-App has been deployed successfully to EKS.</p>
+
+                <table style="width:100%; border-collapse:collapse; margin-top:20px;">
+                  <tr style="background:#f8f9fa;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌍 Environment</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ needs.setup.outputs.environment }}</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🐳 Image Tag</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ needs.setup.outputs.image_tag }}</code>
+                    </td>
+                  </tr>
+                  <tr style="background:#f8f9fa;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">📦 Namespace</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ needs.setup.outputs.namespace }}</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔁 Replicas</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ needs.setup.outputs.replicas }}</code>
+                    </td>
+                  </tr>
+                  <tr style="background:#f8f9fa;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌿 Branch</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.ref_name }}</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔖 Commit</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.sha }}</code>
+                    </td>
+                  </tr>
+                  <tr style="background:#f8f9fa;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">👤 Triggered By</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.actor }}</code>
+                    </td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:25px; text-align:center;">
+                  <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                     style="background:#28a745; color:white; padding:12px 25px;
+                            text-decoration:none; border-radius:5px; font-weight:bold;">
+                    🔍 View Pipeline Run
+                  </a>
+                </div>
+
+                <p style="color:#aaa; font-size:12px; margin-top:30px; text-align:center;">
+                  This is an automated message from Banking-App GitHub Actions CI/CD Pipeline.
+                </p>
+              </div>
+            </body>
+            </html>
+
+  # ─────────────────────────────────────────────────
+  #  JOB 7: Notify Failure Email
+  # ─────────────────────────────────────────────────
+  notify-failure:
+    name: 📧 Notify Failure — Email
+    runs-on: ubuntu-latest
+    needs: [setup, build, deploy]
+    if: failure()
+
+    steps:
+      - name: Failure summary
+        run: |
+          echo "### ❌ Deployment Failed!"                   >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |"                             >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|"                             >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ needs.setup.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch      | \`${{ github.ref_name }}\` |"                 >> $GITHUB_STEP_SUMMARY
+          echo "| Commit      | \`${{ github.sha }}\` |"                      >> $GITHUB_STEP_SUMMARY
+          echo "| Actor       | \`${{ github.actor }}\` |"                    >> $GITHUB_STEP_SUMMARY
+
+      - name: Send Failure Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port:    465
+          secure:         true
+          username:       ${{ secrets.GMAIL_USERNAME }}
+          password:       ${{ secrets.GMAIL_APP_PASSWORD }}
+          to:             rameshmuddappagari1918@gmail.com
+          from:           "Banking-App CI/CD 🏦 <${{ secrets.GMAIL_USERNAME }}>"
+          subject:        "❌ [${{ needs.setup.outputs.environment }}] Banking-App Deployment FAILED!"
+          html_body: |
+            <html>
+            <body style="font-family: Arial, sans-serif; background:#f4f4f4; padding:20px;">
+              <div style="max-width:600px; margin:auto; background:white; border-radius:8px;
+                          border-left: 5px solid #dc3545; padding:30px;">
+
+                <h2 style="color:#dc3545;">❌ Deployment Failed!</h2>
+                <p style="color:#555;">Banking-App deployment to EKS has failed. Immediate attention required.</p>
+
+                <table style="width:100%; border-collapse:collapse; margin-top:20px;">
+                  <tr style="background:#fff5f5;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌍 Environment</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ needs.setup.outputs.environment }}</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌿 Branch</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.ref_name }}</code>
+                    </td>
+                  </tr>
+                  <tr style="background:#fff5f5;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔖 Commit</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.sha }}</code>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">👤 Triggered By</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.actor }}</code>
+                    </td>
+                  </tr>
+                  <tr style="background:#fff5f5;">
+                    <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">⏰ Time</td>
+                    <td style="padding:10px; border:1px solid #dee2e6;">
+                      <code>${{ github.event.head_commit.timestamp }}</code>
+                    </td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:25px; text-align:center;">
+                  <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                     style="background:#dc3545; color:white; padding:12px 25px;
+                            text-decoration:none; border-radius:5px; font-weight:bold;">
+                    🔍 View Failed Pipeline
+                  </a>
+                </div>
+
+                <p style="color:#aaa; font-size:12px; margin-top:30px; text-align:center;">
+                  This is an automated message from Banking-App GitHub Actions CI/CD Pipeline.
+                </p>
+              </div>
+            </body>
+            </html>
