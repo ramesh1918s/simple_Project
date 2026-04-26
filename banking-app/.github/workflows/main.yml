@@ -1,0 +1,86 @@
+name: Banking-App — Build & Deploy to EKS (Helm)
+
+on:
+  push:
+    branches: [main, develop, staging]
+
+env:
+  AWS_REGION: us-east-2
+  EKS_CLUSTER: banking-eks-cluster
+
+  DOCKERHUB_BACKEND: shivaram1918/banking-backend
+  DOCKERHUB_FRONTEND: shivaram1918/banking-frontend
+
+jobs:
+
+# ─────────────────────────────
+# SETUP
+# ─────────────────────────────
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+
+    steps:
+      - id: vars
+        run: |
+          TAG=${GITHUB_SHA::7}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+# ─────────────────────────────
+# BUILD & PUSH
+# ─────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Backend
+        run: |
+          docker build -t $DOCKERHUB_BACKEND:${{ needs.setup.outputs.tag }} ./backend
+          docker push $DOCKERHUB_BACKEND:${{ needs.setup.outputs.tag }}
+
+      - name: Build Frontend
+        run: |
+          docker build -t $DOCKERHUB_FRONTEND:${{ needs.setup.outputs.tag }} ./frontend
+          docker push $DOCKERHUB_FRONTEND:${{ needs.setup.outputs.tag }}
+
+# ─────────────────────────────
+# DEPLOY TO EKS USING HELM
+# ─────────────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $EKS_CLUSTER
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install banking-app ./helm \
+            --set backend.image.repository=$DOCKERHUB_BACKEND \
+            --set backend.image.tag=${{ needs.setup.outputs.tag }} \
+            --set frontend.image.repository=$DOCKERHUB_FRONTEND \
+            --set frontend.image.tag=${{ needs.setup.outputs.tag }}
