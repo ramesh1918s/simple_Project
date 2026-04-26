@@ -5,7 +5,7 @@ on:
     branches: [main, develop, staging]
 
 env:
-  AWS_REGION: us-east-2
+  AWS_REGION: ap-south-1
   EKS_CLUSTER: banking-eks-cluster
 
   DOCKERHUB_BACKEND: shivaram1918/banking-backend
