@@ -1,4 +1,5 @@
----
+# ─── Deployment: Backend ──────────────────────────────────────────────────────
+# Dockerfile: node:20-alpine, appuser(1000), port 5000, /health endpoint
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,44 +10,39 @@ metadata:
     tier: backend
 spec:
   replicas: 2
-
   selector:
     matchLabels:
       app: banking-backend
-
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
-
   template:
     metadata:
       labels:
         app: banking-backend
         tier: backend
-
     spec:
       terminationGracePeriodSeconds: 30
-
+      # ✅ Matches Dockerfile: adduser -S appuser (UID 1000)
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1000
         fsGroup: 1000
-
       containers:
         - name: backend
-          image: IMAGE_BACKEND   # ✅ replaced dynamically via CI/CD
+          image: shivaram1918/banking-backend:latest # CI/CD replaces this tag
           imagePullPolicy: Always
-
           ports:
             - containerPort: 5000
-
+              name: http
+          # ✅ Loads all vars from ConfigMap + Secret
           envFrom:
             - configMapRef:
                 name: banking-config
             - secretRef:
                 name: banking-secrets
-
           resources:
             requests:
               cpu: "100m"
@@ -54,48 +50,52 @@ spec:
             limits:
               cpu: "300m"
               memory: "256Mi"
-
+          # ✅ Matches Dockerfile HEALTHCHECK — /health on port 5000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            failureThreshold: 30 # 30 × 5s = 150s max startup
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /health
               port: 5000
             initialDelaySeconds: 10
             periodSeconds: 5
-
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 5000
             initialDelaySeconds: 20
             periodSeconds: 10
-
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 5000
-            failureThreshold: 30
-            periodSeconds: 5
-
+            failureThreshold: 3
           lifecycle:
             preStop:
               exec:
                 command: ["/bin/sh", "-c", "sleep 5"]
-
 ---
+# ─── Service: Backend ─────────────────────────────────────────────────────────
+# ✅ CRITICAL: name must be "banking-backend" NOT "banking-backend-service"
+#    nginx.conf లో proxy_pass http://banking-backend:5000 — exact match కావాలి!
 apiVersion: v1
 kind: Service
 metadata:
-  name: banking-backend-service
+  name: banking-backend # ← nginx.conf proxy_pass తో exact match
   namespace: banking
+  labels:
+    app: banking-backend
 spec:
   selector:
     app: banking-backend
   ports:
-    - port: 5000
+    - name: http
+      port: 5000
       targetPort: 5000
-  type: ClusterIP
-
+  type: ClusterIP # Frontend → Backend: cluster internal only
 ---
+# ─── PodDisruptionBudget ──────────────────────────────────────────────────────
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -106,8 +106,8 @@ spec:
   selector:
     matchLabels:
       app: banking-backend
-
 ---
+# ─── HorizontalPodAutoscaler ──────────────────────────────────────────────────
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -118,10 +118,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: banking-backend
-
   minReplicas: 2
   maxReplicas: 6
-
   metrics:
     - type: Resource
       resource:
@@ -129,7 +127,6 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
-
     - type: Resource
       resource:
         name: memory

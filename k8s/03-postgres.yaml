@@ -1,10 +1,13 @@
 ---
-# ─── Headless Service (Required for StatefulSet) ───────────────────────────────
+# ─── Headless Service ─────────────────────────────────────────────────────────
+# StatefulSet DNS: postgres-service.banking.svc.cluster.local
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-service
   namespace: banking
+  labels:
+    app: postgres
 spec:
   clusterIP: None
   selector:
@@ -14,7 +17,7 @@ spec:
       name: postgres
 
 ---
-# ─── ConfigMap: Init SQL Script ────────────────────────────────────────────────
+# ─── Init SQL ─────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,44 +28,51 @@ data:
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
     CREATE TABLE IF NOT EXISTS accounts (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        account_number VARCHAR(12) UNIQUE NOT NULL,
-        full_name VARCHAR(100) NOT NULL,
-        email VARCHAR(150) UNIQUE NOT NULL,
-        phone VARCHAR(15),
-        balance NUMERIC(15,2) DEFAULT 0.00 CHECK (balance >= 0),
-        account_type VARCHAR(20) DEFAULT 'SAVINGS',
-        status VARCHAR(10) DEFAULT 'ACTIVE',
-        created_at TIMESTAMP DEFAULT NOW()
+        id             UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+        account_number VARCHAR(12)   UNIQUE NOT NULL,
+        full_name      VARCHAR(100)  NOT NULL,
+        email          VARCHAR(150)  UNIQUE NOT NULL,
+        phone          VARCHAR(15),
+        balance        NUMERIC(15,2) DEFAULT 0.00 CHECK (balance >= 0),
+        account_type   VARCHAR(20)   DEFAULT 'SAVINGS',
+        status         VARCHAR(10)   DEFAULT 'ACTIVE',
+        created_at     TIMESTAMP     DEFAULT NOW()
     );
 
 ---
-# ─── StatefulSet: PostgreSQL ───────────────────────────────────────────────────
+# ─── StatefulSet ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
   namespace: banking
+  labels:
+    app: postgres
 spec:
   serviceName: postgres-service
   replicas: 1
-
   selector:
     matchLabels:
       app: postgres
-
   template:
     metadata:
       labels:
         app: postgres
-
     spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser:  999    # postgres user inside container
+        runAsGroup: 999
+        fsGroup:    999
+
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:16-alpine   # matches your 03-postgres.yaml
+          imagePullPolicy: IfNotPresent
 
           ports:
             - containerPort: 5432
+              name: postgres
 
           env:
             - name: POSTGRES_DB
@@ -83,24 +93,35 @@ spec:
                   name: banking-secrets
                   key: DB_PASSWORD
 
+          resources:
+            requests:
+              cpu:    "250m"
+              memory: "256Mi"
+            limits:
+              cpu:    "500m"
+              memory: "512Mi"
+
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
+              subPath:   postgres      # 
 
             - name: init-script
               mountPath: /docker-entrypoint-initdb.d
 
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "bankuser"]
+              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
             initialDelaySeconds: 10
-            periodSeconds: 5
+            periodSeconds:       5
+            failureThreshold:    6
 
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "bankuser"]
+              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
             initialDelaySeconds: 30
-            periodSeconds: 10
+            periodSeconds:       10
+            failureThreshold:    3
 
       volumes:
         - name: init-script
@@ -112,7 +133,6 @@ spec:
         name: postgres-storage
       spec:
         accessModes: ["ReadWriteOnce"]
-        resources:
+        storageClassName: gp2    # 
           requests:
             storage: 5Gi
-        storageClassName: standard

@@ -1,5 +1,7 @@
----
-# ─── Deployment: Frontend (Nginx) ──────────────────────────────────────────────
+# ---
+# ─── Deployment: Frontend ─────────────────────────────────────────────────────
+# Dockerfile: nginx:1.25-alpine, nginx user(101), port 80
+# nginx.conf: proxies /api/* → http://banking-backend:5000
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,34 +26,48 @@ spec:
         app: banking-frontend
         tier: frontend
     spec:
+      terminationGracePeriodSeconds: 30
+      # ✅ Matches Dockerfile: nginx user UID=101
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # nginx user inside nginx:1.25-alpine
+        runAsGroup: 101
       containers:
         - name: banking-frontend
-          image: your-registry/banking-frontend:latest   # ← Replace with your image
+          image: shivaram1918/banking-frontend:latest # CI/CD replaces this tag
           imagePullPolicy: Always
           ports:
             - containerPort: 80
+              name: http
           resources:
             requests:
-              memory: "32Mi"
               cpu: "50m"
+              memory: "32Mi"
             limits:
-              memory: "64Mi"
               cpu: "100m"
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 10
-            periodSeconds: 15
+              memory: "64Mi"
+          # ✅ Matches Dockerfile HEALTHCHECK — / on port 80
           readinessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 5
-
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
 ---
-# ─── Service: Frontend ─────────────────────────────────────────────────────────
+# ─── Service: Frontend (LoadBalancer) ────────────────────────────────────────
+# 
 apiVersion: v1
 kind: Service
 metadata:
@@ -59,6 +75,9 @@ metadata:
   namespace: banking
   labels:
     app: banking-frontend
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 spec:
   selector:
     app: banking-frontend
@@ -66,53 +85,38 @@ spec:
     - name: http
       port: 80
       targetPort: 80
-  type: ClusterIP
-
+      protocol: TCP
+  type: LoadBalancer
 ---
-# ─── Ingress: Route external traffic ───────────────────────────────────────────
-# Requires nginx-ingress-controller installed in your cluster
-# For Minikube: minikube addons enable ingress
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# ─── PodDisruptionBudget ──────────────────────────────────────────────────────
+apiVersion: policy/v1
+kind: PodDisruptionBudget
 metadata:
-  name: banking-ingress
+  name: frontend-pdb
   namespace: banking
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
-    # Uncomment for TLS with cert-manager:
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
-  ingressClassName: nginx
-  rules:
-    - host: banking.yourdomain.com    # ← Replace with your domain
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: banking-backend-service
-                port:
-                  number: 5000
-          - path: /health
-            pathType: Prefix
-            backend:
-              service:
-                name: banking-backend-service
-                port:
-                  number: 5000
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: banking-frontend-service
-                port:
-                  number: 80
-  # Uncomment for TLS:
-  # tls:
-  #   - hosts:
-  #       - banking.yourdomain.com
-  #     secretName: banking-tls-cert
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: banking-frontend
+---
+# ─── HorizontalPodAutoscaler ──────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: banking-frontend-hpa
+  namespace: banking
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: banking-frontend
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
