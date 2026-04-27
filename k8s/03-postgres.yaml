@@ -1,53 +1,21 @@
 ---
-# ─── Headless Service ─────────────────────────────────────────────────────────
-# StatefulSet DNS: postgres-service.banking.svc.cluster.local
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-service
   namespace: banking
-  labels:
-    app: postgres
 spec:
   clusterIP: None
   selector:
     app: postgres
   ports:
     - port: 5432
-      name: postgres
-
 ---
-# ─── Init SQL ─────────────────────────────────────────────────────────────────
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: postgres-init-sql
-  namespace: banking
-data:
-  init.sql: |
-    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
-    CREATE TABLE IF NOT EXISTS accounts (
-        id             UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-        account_number VARCHAR(12)   UNIQUE NOT NULL,
-        full_name      VARCHAR(100)  NOT NULL,
-        email          VARCHAR(150)  UNIQUE NOT NULL,
-        phone          VARCHAR(15),
-        balance        NUMERIC(15,2) DEFAULT 0.00 CHECK (balance >= 0),
-        account_type   VARCHAR(20)   DEFAULT 'SAVINGS',
-        status         VARCHAR(10)   DEFAULT 'ACTIVE',
-        created_at     TIMESTAMP     DEFAULT NOW()
-    );
-
----
-# ─── StatefulSet ──────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
   namespace: banking
-  labels:
-    app: postgres
 spec:
   serviceName: postgres-service
   replicas: 1
@@ -59,80 +27,43 @@ spec:
       labels:
         app: postgres
     spec:
-      terminationGracePeriodSeconds: 60
-      securityContext:
-        runAsUser:  999    # postgres user inside container
-        runAsGroup: 999
-        fsGroup:    999
-
       containers:
         - name: postgres
-          image: postgres:16-alpine   # matches your 03-postgres.yaml
-          imagePullPolicy: IfNotPresent
-
+          image: postgres:16-alpine
           ports:
             - containerPort: 5432
-              name: postgres
-
           env:
             - name: POSTGRES_DB
-              valueFrom:
-                configMapKeyRef:
-                  name: banking-config
-                  key: DB_NAME
-
+              value: bankingdb
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
                   name: banking-secrets
                   key: DB_USER
-
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: banking-secrets
                   key: DB_PASSWORD
-
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           resources:
             requests:
-              cpu:    "250m"
-              memory: "256Mi"
+              cpu: "100m"
+              memory: "128Mi"
             limits:
-              cpu:    "500m"
-              memory: "512Mi"
-
+              cpu: "300m"
+              memory: "256Mi"
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
-              subPath:   postgres      # 
-
-            - name: init-script
-              mountPath: /docker-entrypoint-initdb.d
-
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
-            initialDelaySeconds: 10
-            periodSeconds:       5
-            failureThreshold:    6
-
-          livenessProbe:
-            exec:
-              command: ["pg_isready", "-U", "bankuser", "-d", "bankingdb"]
-            initialDelaySeconds: 30
-            periodSeconds:       10
-            failureThreshold:    3
-
-      volumes:
-        - name: init-script
-          configMap:
-            name: postgres-init-sql
-
   volumeClaimTemplates:
     - metadata:
         name: postgres-storage
       spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: gp2    # 
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: gp2
+        resources:
           requests:
             storage: 5Gi
