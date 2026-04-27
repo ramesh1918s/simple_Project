@@ -1,0 +1,617 @@
+# 🚀 Banking-App CI/CD Pipeline — GitHub Actions + Helm + EKS
+
+## Complete Setup Guide
+
+---
+
+## 📋 Pipeline Overview
+
+```
+Push to branch / Manual trigger
+         │
+         ▼
+┌─────────────────────┐
+│  JOB 1: Setup       │  → Decides environment, namespace, image tag, replicas
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  JOB 2: Build       │  → Builds & pushes Docker images to DockerHub
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  JOB 3: Scan        │  → Trivy security scan (CRITICAL/HIGH CVEs)
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  JOB 4: Approval    │  → ⏸️ PAUSES — waits for manual approval in GitHub UI
+└─────────────────────┘
+         │
+    ✅ Approved
+         │
+         ▼
+┌─────────────────────┐
+│  JOB 5: Deploy      │  → helm upgrade --install to EKS
+└─────────────────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+ Success    Failure
+    │         │
+    ▼         ▼
+📧 Email   📧 Email
+```
+
+---
+
+## 🌍 Environment Strategy
+
+| Branch | Auto Environment | Namespace | Replicas |
+|--------|-----------------|-----------|----------|
+| `develop` | dev | dev | 1 |
+| `staging` | staging | staging | 2 |
+| `main` | production | default | 3 |
+| Manual trigger | your choice | based on env | based on env |
+
+---
+
+## 🔐 GitHub Secrets Required
+
+Go to: **GitHub Repo → Settings → Secrets and variables → Actions → New repository secret**
+
+Add these secrets:
+
+| Secret Name | Value | How to Get |
+|-------------|-------|------------|
+| `DOCKERHUB_USERNAME` | `shivaram1918` | Your DockerHub username |
+| `DOCKERHUB_TOKEN` | `dckr_pat_xxxx` | DockerHub → Account Settings → Security → New Access Token |
+| `AWS_ACCESS_KEY` | `AKIA...` | AWS IAM → Users → Security credentials → Create access key |
+| `AWS_SECRET_ACCESS_KEY` | `xxxx` | Same as above (shown once) |
+| `GMAIL_USERNAME` | `your@gmail.com` | Your Gmail address |
+| `GMAIL_APP_PASSWORD` | `xxxx xxxx xxxx xxxx` | See Gmail setup below |
+
+### DockerHub Token Setup
+```
+DockerHub → Account Settings (top right)
+→ Security → Access Tokens
+→ New Access Token
+→ Name: "github-actions"
+→ Permissions: Read, Write, Delete
+→ Generate → Copy the token
+→ Paste as DOCKERHUB_TOKEN in GitHub Secrets
+```
+
+### AWS IAM Keys Setup
+```
+AWS Console → IAM → Users → your-user
+→ Security credentials → Access keys
+→ Create access key → Use case: CLI
+→ Copy Access Key ID and Secret Access Key
+→ Add both to GitHub Secrets
+```
+
+### Gmail App Password Setup
+```
+Gmail → Google Account (top right)
+→ Security → 2-Step Verification: Turn ON first
+→ Back to Security → App passwords
+→ Select app: Mail
+→ Select device: Other → type "GitHub Actions"
+→ Generate
+→ Copy the 16-digit password (format: xxxx xxxx xxxx xxxx)
+→ Add as GMAIL_APP_PASSWORD in GitHub Secrets
+→ Add your Gmail as GMAIL_USERNAME in GitHub Secrets
+```
+
+---
+
+## ✅ GitHub Environments Setup (for Approval Gate)
+
+This is what makes the pipeline PAUSE for manual approval.
+
+```
+GitHub Repo → Settings → Environments
+```
+
+### Create 3 Environments:
+
+**1. dev environment**
+```
+→ Click "New environment"
+→ Name: dev
+→ Environment protection rules:
+   → Required reviewers: Add your GitHub username
+→ Save protection rules
+```
+
+**2. staging environment**
+```
+→ Click "New environment"
+→ Name: staging
+→ Environment protection rules:
+   → Required reviewers: Add your GitHub username
+→ Save protection rules
+```
+
+**3. production environment**
+```
+→ Click "New environment"
+→ Name: production
+→ Environment protection rules:
+   → Required reviewers: Add your GitHub username
+   → Wait timer: 5 minutes (optional safety delay)
+   → Deployment branches: main only
+→ Save protection rules
+```
+
+### How Approval Works in Practice
+```
+1. Pipeline runs → reaches Job 4 (Approval)
+2. GitHub sends email: "Review deployment to production"
+3. You click the link → Opens GitHub Actions page
+4. You see: [Approve] [Reject] buttons with comment box
+5. Click Approve → Job 5 (Deploy) starts automatically
+6. Click Reject → Pipeline stops, no deployment happens
+```
+
+---
+
+## ⎈ Helm Chart Setup
+
+The pipeline deploys using Helm. You need a `helm/` folder in your repo.
+
+### Create Helm Chart Structure
+
+```bash
+mkdir -p helm/templates
+cd helm
+```
+
+### `helm/Chart.yaml`
+```yaml
+apiVersion: v2
+name: banking-app
+description: NeoBank 3-tier Banking Application
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+```
+
+### `helm/values.yaml`
+```yaml
+global:
+  environment: dev
+
+backend:
+  image:
+    repository: shivaram1918/banking-backend
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+frontend:
+  image:
+    repository: shivaram1918/banking-frontend
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "20m"
+      memory: "16Mi"
+    limits:
+      cpu: "100m"
+      memory: "32Mi"
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 5Gi
+  storageClass: gp2
+
+configmap:
+  NODE_ENV: production
+  PORT: "5000"
+  DB_HOST: postgres-service
+  DB_PORT: "5432"
+  DB_NAME: bankingdb
+
+secret:
+  DB_USER: YmFua3VzZXI=
+  DB_PASSWORD: YmFua3Bhc3M=
+```
+
+### `helm/templates/configmap.yaml`
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banking-config
+  namespace: {{ .Release.Namespace }}
+data:
+  NODE_ENV: {{ .Values.configmap.NODE_ENV }}
+  PORT:     {{ .Values.configmap.PORT }}
+  DB_HOST:  {{ .Values.configmap.DB_HOST }}
+  DB_PORT:  {{ .Values.configmap.DB_PORT }}
+  DB_NAME:  {{ .Values.configmap.DB_NAME }}
+```
+
+### `helm/templates/secret.yaml`
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: banking-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+data:
+  DB_USER:     {{ .Values.secret.DB_USER }}
+  DB_PASSWORD: {{ .Values.secret.DB_PASSWORD }}
+```
+
+### `helm/templates/postgres.yaml`
+```yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: bankingdb
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.postgres.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+```
+
+### `helm/templates/backend.yaml`
+```yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banking-app-backend
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      app: banking-backend
+  template:
+    metadata:
+      labels:
+        app: banking-backend
+    spec:
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.35
+          command: ['sh', '-c', 'until nc -z postgres-service 5432; do sleep 3; done']
+      containers:
+        - name: backend
+          image: {{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: banking-config
+            - secretRef:
+                name: banking-secrets
+          resources: {{ toYaml .Values.backend.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-app-backend
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: banking-backend
+  ports:
+    - port: 5000
+      targetPort: 5000
+  type: ClusterIP
+```
+
+### `helm/templates/frontend.yaml`
+```yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banking-app-frontend
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.frontend.replicaCount }}
+  selector:
+    matchLabels:
+      app: banking-frontend
+  template:
+    metadata:
+      labels:
+        app: banking-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+      containers:
+        - name: frontend
+          image: {{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          resources: {{ toYaml .Values.frontend.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-app-frontend
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  selector:
+    app: banking-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer
+```
+
+---
+
+## 📁 Final Repo Structure for CI/CD
+
+```
+simple_Project/
+├── .github/
+│   └── workflows/
+│       └── deploy.yml          ← The pipeline file
+├── helm/
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   └── templates/
+│       ├── configmap.yaml
+│       ├── secret.yaml
+│       ├── postgres.yaml
+│       ├── backend.yaml
+│       └── frontend.yaml
+├── backend/
+├── frontend/
+├── k8s/                        ← Manual deploy (keep as backup)
+└── docker-compose.yml
+```
+
+---
+
+## 🔁 Pipeline Trigger Methods
+
+### Method 1 — Auto Trigger (push to branch)
+```bash
+git add .
+git commit -m "feat: update backend logic"
+git push origin develop        # → triggers dev environment
+git push origin staging        # → triggers staging environment
+git push origin main           # → triggers production environment
+```
+
+### Method 2 — Manual Trigger
+```
+GitHub Repo → Actions tab
+→ "Banking-App — Build, Approve & Deploy to EKS (Helm)"
+→ "Run workflow" button (top right)
+→ Select:
+   Environment: production
+   Branch: main
+   Image tag: (leave empty for auto)
+   Skip tests: false
+   Force deploy: false
+→ Click "Run workflow"
+```
+
+---
+
+## 🖥️ Helm Commands Reference
+
+```bash
+# Install Helm locally
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm version
+
+# Lint chart (validate syntax)
+helm lint ./helm
+
+# Dry run (preview what will be deployed)
+helm upgrade --install banking-app ./helm \
+  --namespace banking \
+  --dry-run \
+  --debug
+
+# Manual deploy with Helm
+helm upgrade --install banking-app ./helm \
+  --namespace banking \
+  --set backend.image.tag=prod-abc1234 \
+  --set frontend.image.tag=prod-abc1234 \
+  --set backend.replicaCount=2 \
+  --wait \
+  --timeout 5m
+
+# Check Helm releases
+helm list -n banking
+helm list --all-namespaces
+
+# Check Helm release history
+helm history banking-app -n banking
+
+# Rollback to previous version
+helm rollback banking-app 1 -n banking
+
+# Uninstall release
+helm uninstall banking-app -n banking
+
+# Get computed values
+helm get values banking-app -n banking
+
+# Template output (see final YAML)
+helm template banking-app ./helm --namespace banking
+```
+
+---
+
+## 📧 Email Notifications
+
+### Success Email contains:
+- ✅ Environment, image tag, namespace, replicas
+- Branch and commit SHA
+- Who triggered the deployment
+- Direct link to pipeline run
+
+### Failure Email contains:
+- ❌ Which environment failed
+- Branch, commit SHA, triggered by
+- Direct link to failed pipeline run
+
+---
+
+## 🔍 Pipeline Monitoring
+
+```bash
+# Watch pods during pipeline deploy
+kubectl get pods -n banking -w
+kubectl get pods -n staging -w
+kubectl get pods -n dev -w
+
+# Check Helm release status
+helm status banking-app -n banking
+
+# Check rollout
+kubectl rollout status deployment/banking-app-backend -n banking
+kubectl rollout status deployment/banking-app-frontend -n banking
+
+# Get app URL after deploy
+kubectl get svc banking-app-frontend -n banking
+```
+
+---
+
+## 🚨 Common Pipeline Failures & Fixes
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `DOCKERHUB_TOKEN secret not found` | Secret not added | Add in GitHub → Settings → Secrets |
+| `Error: INSTALLATION FAILED: Helm chart not found` | `helm/` folder missing | Create helm chart structure |
+| `AccessDenied on EKS` | AWS keys wrong or expired | Update `AWS_ACCESS_KEY` secret |
+| `EBS volume pending` | EBS CSI driver IAM issue | Fix IAM role (see main README) |
+| `Approval job skipped` | Environment not created | Create environment in GitHub Settings |
+| `Email send failed` | Gmail App Password wrong | Regenerate App Password |
+| `helm: command not found` | azure/setup-helm step missing | Already in pipeline — check step logs |
+
+---
+
+## ✅ CI/CD Setup Checklist
+
+- [ ] `deploy.yml` placed in `.github/workflows/`
+- [ ] `helm/` folder created with all templates
+- [ ] GitHub Secret: `DOCKERHUB_USERNAME` added
+- [ ] GitHub Secret: `DOCKERHUB_TOKEN` added
+- [ ] GitHub Secret: `AWS_ACCESS_KEY` added
+- [ ] GitHub Secret: `AWS_SECRET_ACCESS_KEY` added
+- [ ] GitHub Secret: `GMAIL_USERNAME` added
+- [ ] GitHub Secret: `GMAIL_APP_PASSWORD` added (16-digit App Password)
+- [ ] GitHub Environment `dev` created with reviewer
+- [ ] GitHub Environment `staging` created with reviewer
+- [ ] GitHub Environment `production` created with reviewer
+- [ ] EKS cluster running (`kubectl get nodes`)
+- [ ] EBS CSI driver working (`6/6 Running`)
+- [ ] Test push to `develop` → pipeline triggers
+- [ ] Approval email received → click Approve
+- [ ] Pods running after deploy
+- [ ] Success email received
+
+---
+
+*NeoBank CI/CD — GitHub Actions + Docker + Trivy + Helm + AWS EKS*
+
