@@ -101,8 +101,9 @@ jobs:
           fi
 
           # ── Determine replicas ─────────────────
-          if   [ "$ENV" = "production" ]; then REPLICAS="3"
-          elif [ "$ENV" = "staging" ];    then REPLICAS="2"
+          # ✅ FIXED: t3.small nodes — keep replicas=1 to avoid OOM
+          if   [ "$ENV" = "production" ]; then REPLICAS="1"
+          elif [ "$ENV" = "staging" ];    then REPLICAS="1"
           else                                 REPLICAS="1"
           fi
 
@@ -229,16 +230,6 @@ jobs:
 
   # ─────────────────────────────────────────────────
   #  JOB 4: Manual Approval Gate 🔐
-  #
-  #  HOW TO SETUP APPROVAL:
-  #  GitHub Repo → Settings → Environments
-  #  → Create: "dev", "staging", "production"
-  #  → Each env → Add "Required reviewers" (your GitHub username)
-  #  → Production → Also enable "Wait timer" (e.g. 5 min)
-  #
-  #  When pipeline runs → it will PAUSE here
-  #  → Reviewer gets email notification
-  #  → They click Approve/Reject in GitHub Actions UI
   # ─────────────────────────────────────────────────
   approval:
     name: ✅ Waiting for Approval — ${{ needs.setup.outputs.environment }}
@@ -246,7 +237,6 @@ jobs:
     needs: [setup, build, scan]
     if: always() && needs.build.result == 'success'
 
-    # ⬇️ This line makes GitHub PAUSE and wait for manual approval
     environment:
       name: ${{ needs.setup.outputs.environment }}
 
@@ -310,8 +300,8 @@ jobs:
             --set frontend.image.tag=${{ needs.setup.outputs.image_tag }} \
             --set frontend.replicaCount=${{ needs.setup.outputs.replicas }} \
             --wait \
-            --timeout 5m \
-            --atomic
+            --timeout 10m \
+            --rollback-on-failure
 
       - name: Get App URL
         id: url
@@ -336,19 +326,11 @@ jobs:
           echo "| 🌐 URL      | ${{ steps.url.outputs.url }} |"                >> $GITHUB_STEP_SUMMARY
           echo ""                                            >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`"                                      >> $GITHUB_STEP_SUMMARY
-          kubectl get pods -n ${{ needs.setup.outputs.namespace }} -l app=banking-app >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n ${{ needs.setup.outputs.namespace }} >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`"                                      >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────────────
   #  JOB 6: Notify Success Email
-  #
-  #  GMAIL SETUP చేయడం ఎలా:
-  #  Gmail → Google Account → Security
-  #  → 2-Step Verification: ON చేయి
-  #  → App Passwords → Select app: Mail
-  #  → Select device: Other → "GitHub Actions"
-  #  → Generate → 16-digit password copy చేయి
-  #  → GitHub Secrets లో GMAIL_APP_PASSWORD గా add చేయి
   # ─────────────────────────────────────────────────
   notify-success:
     name: 📧 Notify Success — Email
@@ -373,55 +355,38 @@ jobs:
             <body style="font-family: Arial, sans-serif; background:#f4f4f4; padding:20px;">
               <div style="max-width:600px; margin:auto; background:white; border-radius:8px;
                           border-left: 5px solid #28a745; padding:30px;">
-
                 <h2 style="color:#28a745;">✅ Deployment Successful!</h2>
                 <p style="color:#555;">Banking-App has been deployed successfully to EKS.</p>
-
                 <table style="width:100%; border-collapse:collapse; margin-top:20px;">
                   <tr style="background:#f8f9fa;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌍 Environment</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ needs.setup.outputs.environment }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ needs.setup.outputs.environment }}</code></td>
                   </tr>
                   <tr>
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🐳 Image Tag</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ needs.setup.outputs.image_tag }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ needs.setup.outputs.image_tag }}</code></td>
                   </tr>
                   <tr style="background:#f8f9fa;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">📦 Namespace</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ needs.setup.outputs.namespace }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ needs.setup.outputs.namespace }}</code></td>
                   </tr>
                   <tr>
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔁 Replicas</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ needs.setup.outputs.replicas }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ needs.setup.outputs.replicas }}</code></td>
                   </tr>
                   <tr style="background:#f8f9fa;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌿 Branch</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.ref_name }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.ref_name }}</code></td>
                   </tr>
                   <tr>
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔖 Commit</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.sha }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.sha }}</code></td>
                   </tr>
                   <tr style="background:#f8f9fa;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">👤 Triggered By</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.actor }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.actor }}</code></td>
                   </tr>
                 </table>
-
                 <div style="margin-top:25px; text-align:center;">
                   <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
                      style="background:#28a745; color:white; padding:12px 25px;
@@ -429,9 +394,8 @@ jobs:
                     🔍 View Pipeline Run
                   </a>
                 </div>
-
                 <p style="color:#aaa; font-size:12px; margin-top:30px; text-align:center;">
-                  This is an automated message from Banking-App GitHub Actions CI/CD Pipeline.
+                  Automated message from Banking-App GitHub Actions CI/CD Pipeline.
                 </p>
               </div>
             </body>
@@ -473,43 +437,30 @@ jobs:
             <body style="font-family: Arial, sans-serif; background:#f4f4f4; padding:20px;">
               <div style="max-width:600px; margin:auto; background:white; border-radius:8px;
                           border-left: 5px solid #dc3545; padding:30px;">
-
                 <h2 style="color:#dc3545;">❌ Deployment Failed!</h2>
                 <p style="color:#555;">Banking-App deployment to EKS has failed. Immediate attention required.</p>
-
                 <table style="width:100%; border-collapse:collapse; margin-top:20px;">
                   <tr style="background:#fff5f5;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌍 Environment</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ needs.setup.outputs.environment }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ needs.setup.outputs.environment }}</code></td>
                   </tr>
                   <tr>
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🌿 Branch</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.ref_name }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.ref_name }}</code></td>
                   </tr>
                   <tr style="background:#fff5f5;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">🔖 Commit</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.sha }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.sha }}</code></td>
                   </tr>
                   <tr>
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">👤 Triggered By</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.actor }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.actor }}</code></td>
                   </tr>
                   <tr style="background:#fff5f5;">
                     <td style="padding:10px; font-weight:bold; border:1px solid #dee2e6;">⏰ Time</td>
-                    <td style="padding:10px; border:1px solid #dee2e6;">
-                      <code>${{ github.event.head_commit.timestamp }}</code>
-                    </td>
+                    <td style="padding:10px; border:1px solid #dee2e6;"><code>${{ github.event.head_commit.timestamp }}</code></td>
                   </tr>
                 </table>
-
                 <div style="margin-top:25px; text-align:center;">
                   <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
                      style="background:#dc3545; color:white; padding:12px 25px;
@@ -517,9 +468,8 @@ jobs:
                     🔍 View Failed Pipeline
                   </a>
                 </div>
-
                 <p style="color:#aaa; font-size:12px; margin-top:30px; text-align:center;">
-                  This is an automated message from Banking-App GitHub Actions CI/CD Pipeline.
+                  Automated message from Banking-App GitHub Actions CI/CD Pipeline.
                 </p>
               </div>
             </body>
