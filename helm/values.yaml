@@ -1,0 +1,47 @@
+global:
+  environment: dev
+
+backend:
+  image:
+    repository: shivaram1918/banking-backend
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+
+frontend:
+  image:
+    repository: shivaram1918/banking-frontend
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "20m"
+      memory: "16Mi"
+    limits:
+      cpu: "100m"
+      memory: "32Mi"
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 5Gi
+  storageClass: gp2
+
+configmap:
+  NODE_ENV: production
+  PORT: "5000"
+  DB_HOST: postgres-service
+  DB_PORT: "5432"
+  DB_NAME: bankingdb
+
+secret:
+  DB_USER: YmFua3VzZXI=
+  DB_PASSWORD: YmFua3Bhc3M=

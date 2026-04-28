@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banking-config
+  namespace: {{ .Release.Namespace }}
+data:
+  NODE_ENV: {{ .Values.configmap.NODE_ENV }}
+  PORT:     {{ .Values.configmap.PORT }}
+  DB_HOST:  {{ .Values.configmap.DB_HOST }}
+  DB_PORT:  {{ .Values.configmap.DB_PORT }}
+  DB_NAME:  {{ .Values.configmap.DB_NAME }}
