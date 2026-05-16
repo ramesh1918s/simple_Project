@@ -409,6 +409,15 @@ LIMIT 10;
 
 ---
 
+```
+# All accounts
+kubectl exec -n banking postgres-0 -- psql -U bankuser -d bankingdb -c \
+  "SELECT account_number, full_name, email, balance, status FROM accounts ORDER BY created_at DESC;"
+
+# All transactions
+kubectl exec -n banking postgres-0 -- psql -U bankuser -d bankingdb -c \
+  "SELECT a.account_number, a.full_name, t.type, t.amount, t.created_at FROM transactions t JOIN accounts a ON t.account_id = a.id ORDER BY t.created_at DESC;"
+```
 ## 🔧 Useful kubectl Commands
 
 ### Pod Management
