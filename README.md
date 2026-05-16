@@ -131,6 +131,8 @@ kubectl get nodes --show-labels
 kubectl cluster-info
 ```
 kubectl get nodes -o wide
+
+```
 ---
 
 ## 💾 EBS CSI Driver Setup (Critical for PersistentVolumes)
@@ -149,6 +151,57 @@ aws eks create-addon \
   --region ap-south-1
 ```
 
+```
+ ##Check the IAM role's trust policy
+
+bashaws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole \
+  --query 'Role.AssumeRolePolicyDocument' --output json
+
+
+##Get your OIDC issuer
+
+bashaws eks describe-cluster --name banking-eks-cluster \
+  --region ap-south-1 \
+  --query 'cluster.identity.oidc.issuer' --output text
+
+
+##Associate the OIDC provider (if not already done)
+
+eksctl utils associate-iam-oidc-provider \
+  --cluster banking-eks-cluster \
+  --region ap-south-1 \
+  --approve
+
+##Create the IAM role + attach the policy in one shot with eksctl
+
+eksctl create iamserviceaccount \
+  --name ebs-csi-controller-sa \
+  --namespace kube-system \
+  --cluster banking-eks-cluster \
+  --region ap-south-1 \
+  --role-name AmazonEKS_EBS_CSI_DriverRole \
+  --role-only \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve
+
+
+The --role-only flag creates just the IAM role without touching the existing service account (since EKS manages it for the EBS CSI addon).
+##Annotate the existing service account with the new role
+
+kubectl annotate sa ebs-csi-controller-sa -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::974145757135:role/AmazonEKS_EBS_CSI_DriverRole \
+  --overwrite
+
+##Restart the controller
+
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+
+##Watch it come up
+
+kubectl get pods -n kube-system -l app=ebs-csi-controller -w
+
+
+```
 ### Step 2 — Get OIDC Provider ID
 
 ```bash
