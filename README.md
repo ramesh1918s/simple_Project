@@ -130,7 +130,7 @@ kubectl get nodes
 kubectl get nodes --show-labels
 kubectl cluster-info
 ```
-
+kubectl get nodes -o wide
 ---
 
 ## 💾 EBS CSI Driver Setup (Critical for PersistentVolumes)
