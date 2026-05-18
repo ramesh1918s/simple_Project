@@ -157,7 +157,7 @@ aws eks create-addon \
 ```
  ##Check the IAM role's trust policy
 
-bashaws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole \
+aws iam get-role --role-name AmazonEKS_EBS_CSI_DriverRole \
   --query 'Role.AssumeRolePolicyDocument' --output json
 
 
