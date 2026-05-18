@@ -1,0 +1,731 @@
+# 🏦 NeoBank — 3-Tier Banking Application on AWS EKS
+
+## Complete Setup Guide: From Zero to Production
+
+---
+
+## 📁 Project Structure
+
+```
+simple_Project/
+├── README.md
+├── deploy.sh                    # Build & deploy script
+├── docker-compose.yml           # Local development
+├── backend/
+│   ├── Dockerfile
+│   ├── server.js                # Express app entry point
+│   ├── db.js                    # PostgreSQL connection pool
+│   ├── package.json
+│   └── routes/
+│       ├── accounts.js          # Account CRUD APIs
+│       └── transactions.js      # Deposit & balance APIs
+├── frontend/
+│   ├── Dockerfile
+│   ├── index.html               # Single-page app
+│   └── nginx.conf               # Nginx reverse proxy config
+├── database/
+│   └── init.sql                 # DB schema (used in Docker Compose)
+└── k8s/
+    ├── 00-namespace.yaml        # banking namespace
+    ├── 01-configmap.yaml        # DB host, port, name env vars
+    ├── 02-secret.yaml           # DB user/password (base64)
+    ├── 03-postgres.yaml         # StatefulSet + PVC + headless Service
+    ├── 04-backend.yaml          # Deployment + ClusterIP Service
+    └── 05-frontend.yaml         # Deployment + LoadBalancer Service
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+Internet
+   │
+   ▼
+AWS NLB (LoadBalancer)
+   │  port 80
+   ▼
+banking-frontend (nginx)         ← Deployment, 1 replica
+   │  /api/* → strips /api → proxy_pass :5000
+   ▼
+banking-app-backend (Node.js)    ← ClusterIP Service name nginx expects
+   │  /api/accounts
+   │  /api/transactions
+   ▼
+postgres-0 (PostgreSQL 16)       ← StatefulSet, 1 replica
+   │  EBS gp2 volume (5Gi)
+   ▼
+AWS EBS PersistentVolume
+```
+
+> ⚠️ **Critical:** The nginx config inside the frontend image proxies to the hostname
+> `banking-app-backend`. Your Kubernetes Service in `04-backend.yaml` **must** be named
+> `banking-app-backend` (not `banking-backend`). Mismatched names cause an immediate
+> nginx `[emerg] host not found in upstream` crash and `CrashLoopBackOff`.
+
+---
+
+## 🔧 Prerequisites
+
+### Tools to Install
+
+```bash
+# 1. AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+aws --version
+
+# 2. kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+kubectl version --client
+
+# 3. eksctl
+curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+sudo mv /tmp/eksctl /usr/local/bin/
+eksctl version
+
+# 4. Docker
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo usermod -aG docker $USER
+docker --version
+```
+
+### AWS CLI Configuration
+
+```bash
+aws configure
+# AWS Access Key ID: <your-key>
+# AWS Secret Access Key: <your-secret>
+# Default region: ap-south-1
+# Default output format: json
+
+# Verify
+aws sts get-caller-identity
+```
+
+---
+
+## ☸️ EKS Cluster Setup
+
+### Create EKS Cluster
+
+```bash
+eksctl create cluster \
+  --name banking-eks-cluster \
+  --region ap-south-1 \
+  --nodegroup-name banking-nodes \
+  --node-type t3.small \
+  --nodes 2 \
+  --nodes-min 2 \
+  --nodes-max 4 \
+  --managed
+
+# Takes ~15-20 minutes
+# Automatically updates ~/.kube/config
+```
+
+### Verify Cluster
+
+```bash
+kubectl get nodes
+kubectl get nodes -o wide
+kubectl cluster-info
+```
+
+---
+
+## 💾 EBS CSI Driver Setup (Critical for PersistentVolumes)
+
+### Why This Is Needed
+
+Modern EKS requires the EBS CSI driver to provision EBS volumes for PersistentVolumeClaims.
+Without it, the postgres PVC stays `Pending` forever and postgres never starts.
+
+### Step 1 — Install the EBS CSI addon
+
+```bash
+aws eks create-addon \
+  --cluster-name banking-eks-cluster \
+  --addon-name aws-ebs-csi-driver \
+  --resolve-conflicts OVERWRITE \
+  --region ap-south-1
+```
+
+### Step 2 — Associate the OIDC provider
+
+> ⚠️ This must be done before creating the IAM role, or the trust policy will be invalid.
+
+```bash
+eksctl utils associate-iam-oidc-provider \
+  --cluster banking-eks-cluster \
+  --region ap-south-1 \
+  --approve
+```
+
+### Step 3 — Get your OIDC hash
+
+```bash
+aws eks describe-cluster \
+  --name banking-eks-cluster \
+  --region ap-south-1 \
+  --query "cluster.identity.oidc.issuer" \
+  --output text
+# Example output:
+# https://oidc.eks.ap-south-1.amazonaws.com/id/D0889E8CF4169C4121C292076C80B89F
+# Copy only the hash at the end
+```
+
+### Step 4 — Create the IAM role manually
+
+> ℹ️ `eksctl create iamserviceaccount` may fail with a CloudFormation error if the role already
+> exists. Creating the role directly with `aws iam` is more reliable.
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+OIDC_ID="<paste-your-hash-here>"
+
+cat > /tmp/ebs-trust-policy.json << EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/oidc.eks.ap-south-1.amazonaws.com/id/${OIDC_ID}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.ap-south-1.amazonaws.com/id/${OIDC_ID}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+          "oidc.eks.ap-south-1.amazonaws.com/id/${OIDC_ID}:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Create the IAM role
+aws iam create-role \
+  --role-name AmazonEKS_EBS_CSI_DriverRole \
+  --assume-role-policy-document file:///tmp/ebs-trust-policy.json
+
+# Attach the EBS policy
+aws iam attach-role-policy \
+  --role-name AmazonEKS_EBS_CSI_DriverRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+```
+
+### Step 5 — Annotate the service account
+
+```bash
+kubectl annotate serviceaccount ebs-csi-controller-sa \
+  -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::${ACCOUNT_ID}:role/AmazonEKS_EBS_CSI_DriverRole \
+  --overwrite
+```
+
+### Step 6 — Restart the CSI controller
+
+```bash
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+
+# Watch until all pods show 6/6 Running
+kubectl get pods -n kube-system -l app=ebs-csi-controller -w
+```
+
+Expected output:
+```
+NAME                                  READY   STATUS    RESTARTS   AGE
+ebs-csi-controller-67c6d46667-mv57d   6/6     Running   0          50s
+ebs-csi-controller-67c6d46667-xbznf   6/6     Running   0          50s
+```
+
+---
+
+## 🐳 Docker Images
+
+### Build and Push
+
+```bash
+# Backend
+docker build -t shivaram1918/banking-backend:latest ./backend
+docker push shivaram1918/banking-backend:latest
+
+# Frontend
+docker build -t shivaram1918/banking-frontend:latest ./frontend
+docker push shivaram1918/banking-frontend:latest
+```
+
+---
+
+## ⚙️ Kubernetes Manifest Notes
+
+### Critical: Backend Service Name Must Match Nginx Config
+
+The frontend image's nginx config (at `/etc/nginx/conf.d/default.conf`) proxies API calls to
+the hostname `banking-app-backend`. Your backend Service in `04-backend.yaml` **must** use
+that exact name:
+
+```yaml
+# 04-backend.yaml — Service section
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-app-backend    # ← MUST be this, not "banking-backend"
+  namespace: banking
+spec:
+  selector:
+    app: banking-backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP
+```
+
+You can verify what hostname nginx expects at any time by running a temporary pod:
+
+```bash
+kubectl run tmp-frontend --image=shivaram1918/banking-frontend:latest \
+  --restart=Never -n banking --command -- sleep 3600
+
+kubectl exec -it tmp-frontend -n banking -- cat /etc/nginx/conf.d/default.conf
+# Look for: proxy_pass http://<hostname>:5000;
+# Your Service name must match <hostname>
+
+kubectl delete pod tmp-frontend -n banking
+```
+
+---
+
+## 🚀 Deploy to Kubernetes
+
+### Always run from the project root
+
+```bash
+cd /home/ubuntu/simple_Project   # ← must be here, not inside k8s/
+
+kubectl apply -f k8s/00-namespace.yaml
+kubectl apply -f k8s/01-configmap.yaml
+kubectl apply -f k8s/02-secret.yaml
+kubectl apply -f k8s/03-postgres.yaml
+kubectl apply -f k8s/04-backend.yaml
+kubectl apply -f k8s/05-frontend.yaml
+```
+
+> ⚠️ If you are already inside the `k8s/` directory, drop the `k8s/` prefix:
+> `kubectl apply -f 04-backend.yaml`
+
+### Watch Pods Come Up
+
+```bash
+kubectl get pods -n banking -w
+```
+
+Expected final state:
+```
+NAME                                READY   STATUS    RESTARTS   AGE
+banking-backend-xxxx                1/1     Running   0          2m
+banking-frontend-xxxx               1/1     Running   0          2m
+postgres-0                          1/1     Running   0          3m
+```
+
+### Get App URL
+
+```bash
+kubectl get svc banking-frontend-service -n banking
+# Copy the EXTERNAL-IP — that's your app URL
+```
+
+---
+
+## 🗄️ Database Setup
+
+### Why Tables Are Not Auto-Created
+
+The backend has no migration runner. Tables must be created manually once postgres is running.
+
+### Connect to PostgreSQL
+
+```bash
+kubectl exec -it -n banking postgres-0 -- psql -U bankuser -d bankingdb
+```
+
+### Create Tables (run inside psql)
+
+```sql
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Accounts table
+CREATE TABLE IF NOT EXISTS accounts (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  account_number VARCHAR(20) UNIQUE NOT NULL DEFAULT '',
+  full_name      VARCHAR(100) NOT NULL,
+  email          VARCHAR(100) UNIQUE NOT NULL,
+  phone          VARCHAR(20),
+  account_type   VARCHAR(20) DEFAULT 'SAVINGS',
+  balance        DECIMAL(15,2) DEFAULT 0.00,
+  status         VARCHAR(20) DEFAULT 'ACTIVE',
+  created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Auto-generate account number on insert
+CREATE OR REPLACE FUNCTION generate_account_number()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.account_number := 'ACC' || LPAD(FLOOR(RANDOM() * 9000000 + 1000000)::TEXT, 7, '0');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER set_account_number
+BEFORE INSERT ON accounts
+FOR EACH ROW
+WHEN (NEW.account_number = '' OR NEW.account_number IS NULL)
+EXECUTE FUNCTION generate_account_number();
+
+-- Transactions table
+CREATE TABLE IF NOT EXISTS transactions (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  account_id   UUID REFERENCES accounts(id),
+  type         VARCHAR(20) NOT NULL,
+  amount       DECIMAL(15,2) NOT NULL,
+  description  TEXT,
+  balance_after DECIMAL(15,2),
+  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Verify
+\dt
+```
+
+### Exit psql
+
+```bash
+\q
+```
+
+---
+
+## 🔍 Database Query Commands
+
+```bash
+# All accounts
+kubectl exec -n banking postgres-0 -- psql -U bankuser -d bankingdb -c \
+  "SELECT account_number, full_name, email, balance, status FROM accounts ORDER BY created_at DESC;"
+
+# All transactions
+kubectl exec -n banking postgres-0 -- psql -U bankuser -d bankingdb -c \
+  "SELECT a.account_number, a.full_name, t.type, t.amount, t.created_at
+   FROM transactions t JOIN accounts a ON t.account_id = a.id ORDER BY t.created_at DESC;"
+```
+
+Inside an interactive psql session:
+
+```sql
+-- List all tables
+\dt
+
+-- Describe table structure
+\d accounts
+\d transactions
+
+-- Account summary
+SELECT COUNT(*) as total_accounts, SUM(balance) as total_balance, AVG(balance) as avg_balance
+FROM accounts;
+
+-- Transaction summary by type
+SELECT type, COUNT(*) as count, SUM(amount) as total FROM transactions GROUP BY type;
+
+-- Check specific account
+SELECT * FROM accounts WHERE email = 'your@email.com';
+
+-- Recent transactions for an account
+SELECT t.*
+FROM transactions t
+JOIN accounts a ON t.account_id = a.id
+WHERE a.email = 'your@email.com'
+ORDER BY t.created_at DESC LIMIT 10;
+```
+
+---
+
+## 🔧 Useful kubectl Commands
+
+### Pod Management
+
+```bash
+kubectl get pods -n banking
+kubectl get pods -n banking -w
+kubectl describe pod <pod-name> -n banking
+kubectl logs -n banking deployment/banking-backend --tail=50
+kubectl logs -n banking deployment/banking-frontend --tail=50
+kubectl logs -n banking postgres-0 --tail=50
+kubectl logs -n banking deployment/banking-backend -f       # follow live
+kubectl logs <pod-name> -n banking --previous               # last crashed instance
+kubectl exec -it -n banking <pod-name> -- /bin/sh
+```
+
+### Service & Networking
+
+```bash
+kubectl get svc -n banking
+kubectl get svc banking-frontend-service -n banking
+kubectl get endpoints -n banking
+```
+
+### Storage
+
+```bash
+kubectl get pvc -n banking
+kubectl get pv
+kubectl get storageclass
+kubectl describe pvc postgres-storage-postgres-0 -n banking
+```
+
+### Deployment Management
+
+```bash
+kubectl rollout restart deployment/banking-backend -n banking
+kubectl rollout restart deployment/banking-frontend -n banking
+kubectl rollout status deployment/banking-backend -n banking
+kubectl scale deployment banking-backend --replicas=2 -n banking
+```
+
+### Debugging
+
+```bash
+kubectl get events -n banking --sort-by='.lastTimestamp'
+kubectl top pods -n banking
+kubectl top nodes
+kubectl get configmap banking-config -n banking -o yaml
+kubectl get secret banking-secrets -n banking -o yaml
+```
+
+---
+
+## 🌐 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/accounts` | Create new account |
+| GET | `/api/accounts` | List all accounts |
+| GET | `/api/accounts/:identifier` | Get account by number/email/id |
+| POST | `/api/transactions/deposit` | Deposit money |
+| GET | `/api/transactions/balance/:identifier` | Check balance |
+| GET | `/api/transactions/:identifier` | Transaction history |
+| GET | `/health` | Health check |
+
+### Test API Directly
+
+```bash
+LB=$(kubectl get svc banking-frontend-service -n banking -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+curl http://$LB/health
+
+curl -X POST http://$LB/api/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"full_name":"Test User","email":"test@example.com","phone":"+919876543210","account_type":"SAVINGS","initial_deposit":5000}'
+
+curl http://$LB/api/transactions/balance/test@example.com
+
+curl -X POST http://$LB/api/transactions/deposit \
+  -H "Content-Type: application/json" \
+  -d '{"account_identifier":"test@example.com","amount":1000,"description":"Test deposit"}'
+```
+
+---
+
+## 🚨 Troubleshooting
+
+### ❌ Frontend: `CrashLoopBackOff` — `host not found in upstream`
+
+```
+[emerg] 1#1: host not found in upstream "banking-app-backend" in /etc/nginx/conf.d/default.conf:33
+```
+
+**Cause:** The nginx config inside the Docker image resolves the backend by the Kubernetes Service
+name. If that Service doesn't exist, nginx refuses to start.
+
+**Fix:** Ensure the backend Service in `04-backend.yaml` is named `banking-app-backend`:
+
+```bash
+kubectl get svc -n banking        # confirm the service name
+kubectl apply -f 04-backend.yaml  # apply after renaming
+kubectl rollout restart deployment/banking-frontend -n banking
+```
+
+---
+
+### ❌ EBS CSI Controller: `CrashLoopBackOff` after install
+
+**Cause:** The EBS CSI controller pod can't assume the IAM role because:
+- The OIDC provider wasn't associated before the role was created, or
+- The service account wasn't annotated with the role ARN.
+
+**Fix — full sequence:**
+
+```bash
+# 1. Associate OIDC provider (if not done yet)
+eksctl utils associate-iam-oidc-provider \
+  --cluster banking-eks-cluster --region ap-south-1 --approve
+
+# 2. Re-annotate the service account with the correct role ARN
+kubectl annotate sa ebs-csi-controller-sa -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EBS_CSI_DriverRole \
+  --overwrite
+
+# 3. Restart the controller
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+
+# 4. Verify — should reach 6/6 Running
+kubectl get pods -n kube-system -l app=ebs-csi-controller -w
+```
+
+> ⚠️ `eksctl create iamserviceaccount` may fail with a CloudFormation error if the role already
+> exists. Skip it and annotate the service account manually as shown above.
+
+---
+
+### ❌ `eksctl create iamserviceaccount` fails with CloudFormation error
+
+**Cause:** The role `AmazonEKS_EBS_CSI_DriverRole` already exists (created manually), so
+CloudFormation tries and fails to create it again.
+
+**Fix:** Skip `eksctl create iamserviceaccount` entirely. The role is already in place.
+Just annotate the existing service account:
+
+```bash
+kubectl annotate sa ebs-csi-controller-sa -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKS_EBS_CSI_DriverRole \
+  --overwrite
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+```
+
+---
+
+### ❌ `kubectl apply` — `the path "k8s/..." does not exist`
+
+**Cause:** You are running the command from inside the `k8s/` directory, so the relative
+path `k8s/04-backend.yaml` doesn't resolve.
+
+**Fix:** Always run `kubectl apply` from the project root, or drop the `k8s/` prefix:
+
+```bash
+# From project root:
+cd /home/ubuntu/simple_Project
+kubectl apply -f k8s/04-backend.yaml
+
+# OR from inside k8s/:
+cd /home/ubuntu/simple_Project/k8s
+kubectl apply -f 04-backend.yaml
+```
+
+---
+
+### ❌ Postgres Pod Pending
+
+```bash
+kubectl describe pvc postgres-storage-postgres-0 -n banking
+kubectl get events -n banking
+```
+
+Common causes:
+- EBS CSI driver not running → fix IAM role and restart controller (see above)
+- Wrong `storageClassName` → must match: `kubectl get storageclass`
+- Node capacity full → `kubectl describe nodes | grep -E "memory|Taints"`
+
+---
+
+### ❌ Backend CrashLoopBackOff
+
+```bash
+kubectl logs -n banking deployment/banking-backend --tail=30
+```
+
+Common causes:
+- Postgres not ready → the `initContainer` `wait-for-postgres` handles this automatically
+- Tables not created → run the `CREATE TABLE` commands in the Database Setup section
+- Wrong DB credentials → check configmap and secret values
+
+---
+
+### ❌ 500 Error on API calls
+
+```bash
+kubectl logs -n banking deployment/banking-backend -f
+```
+
+Common causes:
+- Tables don't exist → run `CREATE TABLE` commands
+- Duplicate empty `account_number` → create the trigger (see Database Setup)
+- Wrong env vars → `kubectl get configmap banking-config -n banking -o yaml`
+
+---
+
+## 🧹 Cleanup
+
+```bash
+# Delete all app resources
+kubectl delete namespace banking
+
+# Delete EKS cluster (stops AWS billing)
+eksctl delete cluster --name banking-eks-cluster --region ap-south-1
+
+# Delete IAM role
+aws iam detach-role-policy \
+  --role-name AmazonEKS_EBS_CSI_DriverRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+aws iam delete-role --role-name AmazonEKS_EBS_CSI_DriverRole
+```
+
+---
+
+## 📦 Secret Values Reference
+
+```bash
+# Decode existing secrets
+kubectl get secret banking-secrets -n banking -o jsonpath='{.data.DB_USER}' | base64 -d
+kubectl get secret banking-secrets -n banking -o jsonpath='{.data.DB_PASSWORD}' | base64 -d
+
+# Generate new base64 values
+echo -n "bankuser" | base64    # YmFua3VzZXI=
+echo -n "bankpass" | base64    # YmFua3Bhc3M=
+```
+
+---
+
+## ✅ Full Deployment Checklist
+
+- [ ] AWS CLI configured with correct credentials
+- [ ] `eksctl`, `kubectl`, `docker` installed
+- [ ] EKS cluster created (2x t3.small nodes)
+- [ ] kubeconfig updated (`aws eks update-kubeconfig`)
+- [ ] OIDC provider associated (`eksctl utils associate-iam-oidc-provider`)
+- [ ] EBS CSI addon installed (`aws eks create-addon`)
+- [ ] IAM role `AmazonEKS_EBS_CSI_DriverRole` created with correct OIDC trust policy
+- [ ] `ebs-csi-controller-sa` annotated with IAM role ARN
+- [ ] EBS CSI controller pods showing `6/6 Running`
+- [ ] Docker images built and pushed to Docker Hub
+- [ ] Backend Service name in `04-backend.yaml` is **`banking-app-backend`**
+- [ ] All k8s manifests applied **from the project root** in order (00 → 05)
+- [ ] `postgres-0` pod Running, PVC Bound
+- [ ] Database tables created manually via psql
+- [ ] Account number trigger created
+- [ ] Backend pod Running (1/1)
+- [ ] Frontend pod Running (1/1)
+- [ ] LoadBalancer EXTERNAL-IP assigned
+- [ ] App accessible in browser
+- [ ] Account creation working
+- [ ] Deposit and balance check working
+
+---
+
+*NeoBank — Built with Node.js, PostgreSQL, nginx, Docker, and AWS EKS*
